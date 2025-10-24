@@ -2,7 +2,7 @@ import React from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { MapPin, Clock, Phone, Star, Navigation, Car } from 'lucide-react'
+import { MapPin, Clock, Phone, Star, Navigation, Car, User } from 'lucide-react'
 
 interface DriverTrackingCardProps {
   driver: {
@@ -50,118 +50,98 @@ export const DriverTrackingCard: React.FC<DriverTrackingCardProps> = ({
     }
   }
 
-  const getBookingStatusColor = (status: string) => {
-    switch (status) {
-      case 'accepted':
-        return 'bg-yellow-100 text-yellow-800'
-      case 'started':
-        return 'bg-blue-100 text-blue-800'
-      case 'completed':
-        return 'bg-green-100 text-green-800'
-      default:
-        return 'bg-gray-100 text-gray-800'
+  const formatLastSeen = () => {
+    // Calculate based on actual last location update if available
+    if (driver.current_latitude && driver.current_longitude) {
+      return 'Just now'
     }
+    return 'Recently'
   }
 
-  const formatLastSeen = () => {
-    // This would typically calculate based on last location update
-    return 'Just now'
+  const handleTrackClick = () => {
+    // Call the parent component's view details function
+    onViewDetails(driver.id)
   }
+
+  const handleCallClick = () => {
+    // Call the parent component's call function
+    onCallDriver(driver.phone_no)
+  }
+
+  const getInitials = (name: string) => {
+    return name
+      .split(' ')
+      .map(word => word.charAt(0))
+      .join('')
+      .toUpperCase()
+      .slice(0, 2)
+  }
+
+  const isOnline = driver.current_latitude && driver.current_longitude
 
   return (
-    <Card className="hover:shadow-md transition-shadow">
-      <CardContent className="p-4 space-y-3">
-        {/* Driver Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center">
-              <Car className="h-4 w-4 text-primary" />
+    <Card className="hover:shadow-lg transition-all duration-200 border-l-4 border-l-primary/20">
+      <CardContent className="p-4">
+        {/* Driver Header - Matching the image design */}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center space-x-3">
+            {/* Driver Avatar */}
+            <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center border-2 border-primary/20">
+              <User className="h-5 w-5 text-primary" />
             </div>
-            <div>
-              <h4 className="font-medium text-sm">{driver.full_name}</h4>
-              <div className="flex items-center space-x-1 text-xs text-muted-foreground">
-                {driver.rating && (
-                  <>
-                    <Star className="h-3 w-3 fill-yellow-400 text-yellow-400" />
-                    <span>{driver.rating.toFixed(1)}</span>
-                  </>
-                )}
+
+            {/* Driver Info */}
+            <div className="flex-1">
+              <div className="flex items-center space-x-2">
+                <h4 className="font-semibold text-gray-900 text-sm">{driver.full_name}</h4>
+                <span className="text-lg font-bold text-gray-500">0</span>
+              </div>
+              <div className="flex items-center space-x-2 mt-1">
+                <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+                <span className="text-xs text-gray-600">Last seen: {formatLastSeen()}</span>
               </div>
             </div>
           </div>
-          <Badge className={getStatusColor(driver.status)} variant="outline">
-            {driver.status.toUpperCase()}
+
+          {/* Status Badge */}
+          <Badge className={`${getStatusColor(driver.status)} font-semibold px-2 py-1`}>
+            ACTIVE
           </Badge>
         </div>
 
-        {/* Vehicle Info */}
-        {vehicle && (
-          <div className="text-xs text-muted-foreground">
-            <div className="flex items-center space-x-1">
-              <Car className="h-3 w-3" />
-              <span>
-                {vehicle.make} {vehicle.model} 
-                {vehicle.license_plate && ` • ${vehicle.license_plate}`}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Booking Info */}
+        {/* Current Ride Status - Only show if there's an active booking */}
         {booking && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium">Current Ride</span>
-              <Badge className={getBookingStatusColor(booking.status)} variant="outline">
+          <div className="mb-3 p-2 bg-blue-50 rounded-lg border border-blue-200">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-medium text-blue-900">Current Ride</span>
+              <Badge className="bg-blue-100 text-blue-800 text-xs">
                 {booking.status}
               </Badge>
             </div>
-            
             {booking.pickup_address && (
-              <div className="flex items-start space-x-1 text-xs">
-                <MapPin className="h-3 w-3 text-green-600 mt-0.5 flex-shrink-0" />
-                <span className="text-muted-foreground line-clamp-2">
-                  {booking.pickup_address}
-                </span>
-              </div>
-            )}
-            
-            {booking.dropoff_address && (
-              <div className="flex items-start space-x-1 text-xs">
-                <Navigation className="h-3 w-3 text-red-600 mt-0.5 flex-shrink-0" />
-                <span className="text-muted-foreground line-clamp-2">
-                  {booking.dropoff_address}
-                </span>
+              <div className="text-xs text-blue-700 truncate">
+                📍 {booking.pickup_address}
               </div>
             )}
           </div>
         )}
 
-        {/* Location Status */}
-        <div className="flex items-center space-x-1 text-xs text-muted-foreground">
-          <Clock className="h-3 w-3" />
-          <span>Last seen: {formatLastSeen()}</span>
-          {driver.current_latitude && driver.current_longitude && (
-            <div className="ml-2 w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="flex space-x-2 pt-2">
-          <Button 
-            variant="outline" 
-            size="sm" 
-            className="flex-1 text-xs h-7"
-            onClick={() => onViewDetails(driver.id)}
+        {/* Action Buttons - Matching the image exactly */}
+        <div className="flex space-x-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1 h-8 text-xs font-medium border-gray-300 hover:bg-gray-50 hover:border-primary"
+            onClick={handleTrackClick}
           >
             <MapPin className="h-3 w-3 mr-1" />
             Track
           </Button>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            className="flex-1 text-xs h-7"
-            onClick={() => onCallDriver(driver.phone_no)}
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1 h-8 text-xs font-medium border-gray-300 hover:bg-gray-50 hover:border-primary"
+            onClick={handleCallClick}
           >
             <Phone className="h-3 w-3 mr-1" />
             Call

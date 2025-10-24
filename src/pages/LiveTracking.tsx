@@ -1,14 +1,15 @@
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
-import { Users, Car, MapPin, Activity, Phone, Settings, RotateCcw } from 'lucide-react'
+import { Users, Car, MapPin, Activity, Phone, Settings, RotateCcw, Navigation } from 'lucide-react'
 import { LiveMapView } from '@/components/tracking/LiveMapView'
 import { DriverTrackingCard } from '@/components/tracking/DriverTrackingCard'
+import { DriverLocationTracker } from '@/components/tracking/DriverLocationTracker'
 import { useRealtimeTracking } from '@/hooks/useRealtimeTracking'
 import { toast } from 'sonner'
 
@@ -24,14 +25,23 @@ export const LiveTracking: React.FC = () => {
   } = useRealtimeTracking()
 
   const [selectedDriver, setSelectedDriver] = useState<string>('all')
+
+  // Debug log for selectedDriver changes
+  useEffect(() => {
+    console.log('[DEBUG] LiveTracking: selectedDriver changed to:', selectedDriver)
+  }, [selectedDriver])
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [showOnlyActive, setShowOnlyActive] = useState(false)
 
   const handleViewDetails = useCallback((driverId: string) => {
+    console.log('[DEBUG] handleViewDetails called with driverId:', driverId)
     const driver = trackingData.find(data => data.driver.id === driverId)
     if (driver) {
+      console.log('[DEBUG] Setting selectedDriver to:', driverId)
       setSelectedDriver(driverId)
       toast.info(`Tracking ${driver.driver.full_name}`)
+    } else {
+      console.log('[DEBUG] Driver not found for id:', driverId)
     }
   }, [trackingData])
 
@@ -55,6 +65,7 @@ export const LiveTracking: React.FC = () => {
   const activeDriversCount = getActiveDriversCount()
   const onRideDriversCount = getOnRideDriversCount()
   const totalDriversCount = trackingData.length
+  const trackingDriversCount = trackingData.filter(data => data.driver.current_latitude && data.driver.current_longitude).length
 
   if (loading) {
     return (
@@ -166,39 +177,39 @@ export const LiveTracking: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+
+        <Card className="hover-scale">
+          <CardContent className="flex items-center p-6">
+            <div className="p-2 bg-green-100 rounded-lg mr-4">
+              <Navigation className="h-6 w-6 text-green-600" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-muted-foreground">Location Tracking</p>
+              <p className="text-2xl font-bold text-green-600">{trackingDriversCount}</p>
+              <p className="text-xs text-muted-foreground">of {totalDriversCount} drivers</p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Main Content */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Live Map */}
         <div className="lg:col-span-3">
-          <LiveMapView />
+          <LiveMapView selectedDriver={selectedDriver} />
         </div>
 
         {/* Driver List Sidebar */}
         <div className="space-y-4">
+          {/* Location Tracking Controls */}
+          <DriverLocationTracker driverId={selectedDriver} driverName={selectedDriver === 'all' ? 'All Drivers' : trackingData.find(d => d.driver.id === selectedDriver)?.driver.full_name || 'Selected Driver'} />
+
           {/* Controls */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Driver Controls</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div>
-                <Label htmlFor="driver-filter" className="text-sm font-medium">Filter Driver</Label>
-                <Select value={selectedDriver} onValueChange={setSelectedDriver}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="All drivers" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Drivers</SelectItem>
-                    {trackingData.map(data => (
-                      <SelectItem key={data.driver.id} value={data.driver.id}>
-                        {data.driver.full_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
 
               <div className="flex items-center space-x-2">
                 <Switch

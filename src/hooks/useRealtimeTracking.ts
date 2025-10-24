@@ -20,6 +20,12 @@ interface TrackingData {
     dropoff_latitude?: number
     dropoff_longitude?: number
     status: string
+    fare_amount?: number
+    distance_km?: number
+    customer?: {
+      full_name?: string
+      phone_no?: string
+    }
   }
   vehicle?: {
     make?: string
@@ -27,6 +33,13 @@ interface TrackingData {
     type?: string
     license_plate?: string
   }
+}
+
+interface VehicleData {
+  make?: string
+  model?: string
+  type?: string
+  license_plate?: string
 }
 
 export const useRealtimeTracking = () => {
@@ -38,7 +51,7 @@ export const useRealtimeTracking = () => {
   const fetchTrackingData = useCallback(async () => {
     try {
       setError(null)
-      
+
       // Fetch drivers with user data from unified view
       const { data: driversData, error: driversError } = await supabase
         .from('drivers_with_user_info')
@@ -56,7 +69,7 @@ export const useRealtimeTracking = () => {
 
       if (driversError) throw driversError
 
-      // Fetch active bookings with vehicle details
+      // Fetch active bookings with vehicle details and customer info
       const { data: bookingsData, error: bookingsError } = await supabase
         .from('bookings')
         .select(`
@@ -70,11 +83,17 @@ export const useRealtimeTracking = () => {
           dropoff_longitude,
           status,
           vehicle_id,
+          fare_amount,
+          distance_km,
           vehicles (
             make,
             model,
             type,
             license_plate
+          ),
+          users (
+            full_name,
+            phone_no
           )
         `)
         .in('status', ['accepted', 'started'])
@@ -84,7 +103,7 @@ export const useRealtimeTracking = () => {
       // Combine driver and booking data
       const combinedData: TrackingData[] = driversData.map(driver => {
         const driverBooking = bookingsData.find(booking => booking.driver_id === driver.id)
-        
+
         return {
           driver: {
             id: driver.id,
@@ -103,22 +122,28 @@ export const useRealtimeTracking = () => {
             pickup_longitude: driverBooking.pickup_longitude,
             dropoff_latitude: driverBooking.dropoff_latitude,
             dropoff_longitude: driverBooking.dropoff_longitude,
-            status: driverBooking.status
+            status: driverBooking.status,
+            fare_amount: driverBooking.fare_amount,
+            distance_km: driverBooking.distance_km,
+            customer: driverBooking.users && Array.isArray(driverBooking.users) && driverBooking.users.length > 0 ? {
+              full_name: driverBooking.users[0].full_name,
+              phone_no: driverBooking.users[0].phone_no
+            } : undefined
           } : undefined,
           vehicle: driverBooking?.vehicles ? {
-            make: (driverBooking.vehicles as any)?.make,
-            model: (driverBooking.vehicles as any)?.model,
-            type: (driverBooking.vehicles as any)?.type,
-            license_plate: (driverBooking.vehicles as any)?.license_plate
+            make: (driverBooking.vehicles as VehicleData)?.make,
+            model: (driverBooking.vehicles as VehicleData)?.model,
+            type: (driverBooking.vehicles as VehicleData)?.type,
+            license_plate: (driverBooking.vehicles as VehicleData)?.license_plate
           } : undefined
         }
       })
 
       setTrackingData(combinedData)
       setLastUpdate(new Date())
-    } catch (err: any) {
+    } catch (err) {
       console.error('Error fetching tracking data:', err)
-      setError(err.message || 'Failed to fetch tracking data')
+      setError(err instanceof Error ? err.message : 'Failed to fetch tracking data')
     } finally {
       setLoading(false)
     }
@@ -127,6 +152,11 @@ export const useRealtimeTracking = () => {
   // Set up real-time subscriptions
   useEffect(() => {
     fetchTrackingData()
+
+    // Set up periodic refresh every 10 seconds to ensure updates
+    const intervalId = setInterval(() => {
+      fetchTrackingData()
+    }, 10000)
 
     // Subscribe to driver location updates
     const driversChannel = supabase
@@ -140,7 +170,6 @@ export const useRealtimeTracking = () => {
           filter: 'status=eq.active'
         },
         (payload) => {
-          console.log('Driver update:', payload)
           fetchTrackingData()
         }
       )
@@ -157,7 +186,6 @@ export const useRealtimeTracking = () => {
           table: 'bookings'
         },
         (payload) => {
-          console.log('Booking update:', payload)
           fetchTrackingData()
         }
       )
@@ -174,13 +202,13 @@ export const useRealtimeTracking = () => {
           table: 'users'
         },
         (payload) => {
-          console.log('User update:', payload)
           fetchTrackingData()
         }
       )
       .subscribe()
 
     return () => {
+      clearInterval(intervalId)
       supabase.removeChannel(driversChannel)
       supabase.removeChannel(bookingsChannel)
       supabase.removeChannel(usersChannel)
@@ -198,16 +226,20 @@ export const useRealtimeTracking = () => {
         .from('drivers')
         .update({
           current_latitude: latitude,
-          current_longitude: longitude
+          current_longitude: longitude,
+          last_location_update: new Date().toISOString()
         })
         .eq('id', driverId)
 
       if (error) throw error
-    } catch (err: any) {
+
+      // Refresh tracking data to reflect the location update
+      fetchTrackingData()
+    } catch (err) {
       console.error('Error updating driver location:', err)
-      setError(err.message || 'Failed to update location')
+      setError(err instanceof Error ? err.message : 'Failed to update location')
     }
-  }, [])
+  }, [fetchTrackingData])
 
   const getDriverById = useCallback((driverId: string) => {
     return trackingData.find(data => data.driver.id === driverId)
