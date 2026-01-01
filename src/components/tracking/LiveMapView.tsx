@@ -55,58 +55,70 @@ interface LiveMapViewProps {
 }
 
 export const LiveMapView: React.FC<LiveMapViewProps> = ({ selectedDriver: propSelectedDriver }) => {
+  const mapContainerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<google.maps.Map | null>(null)
+  const googleRef = useRef<typeof google | null>(null)
   const markersRef = useRef<Map<string, google.maps.Marker>>(new Map())
+  const polylinesRef = useRef<Map<string, google.maps.Polyline>>(new Map())
   const directionsServiceRef = useRef<google.maps.DirectionsService | null>(null)
   const directionsRendererRef = useRef<google.maps.DirectionsRenderer | null>(null)
+  const updateMapMarkersRef = useRef<() => void>(() => {})
 
   const { trackingData, loading, error, lastUpdate, refreshData } = useRealtimeTracking()
 
   const [internalSelectedDriver, setInternalSelectedDriver] = useState<string>('all')
-
   const selectedDriver = propSelectedDriver || internalSelectedDriver
   const [mapLoaded, setMapLoaded] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [mapError, setMapError] = useState<string | null>(null)
+  const [initializationAttempted, setInitializationAttempted] = useState(false)
 
-  console.log('[DEBUG] LiveMapView: Component rendered, API key starts with:', GOOGLE_MAPS_API_KEY.substring(0, 10) + '...')
+  const selectedDriverData = selectedDriver === 'all'
+    ? null
+    : trackingData.find(data => data.driver.id === selectedDriver)
 
   const initializeMap = useCallback(async () => {
-    if (!mapRef.current || mapLoaded) return
-
-    console.log('[DEBUG] initializeMap: Starting map initialization')
-    console.log('[DEBUG] initializeMap: mapRef.current exists:', !!mapRef.current)
-
+    let mounted = true;
     try {
+      // Reset states
+      setMapError(null)
+      setMapLoaded(false)
+
+      // Validate requirements
       if (!GOOGLE_MAPS_API_KEY) {
-        throw new Error('Google Maps API key is missing. Please set VITE_GOOGLE_MAPS_API_KEY in your .env file.')
+        throw new Error('Google Maps API key is missing')
       }
 
-      console.log('[DEBUG] initializeMap: API key present, loading Google Maps API')
+      if (!mapRef.current) {
+        throw new Error('Map container not found')
+      }
 
+      // Clean up any existing instances
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current = null
+      }
+
+      // Create and configure the loader
       const loader = new Loader({
         apiKey: GOOGLE_MAPS_API_KEY,
         version: 'weekly',
-        libraries: ['places', 'geometry'],
+        libraries: ['places', 'geometry']
       })
 
-      console.log('[DEBUG] initializeMap: Calling loader.load()')
+      // Load Google Maps API
       await loader.load()
-      console.log('[DEBUG] initializeMap: Google Maps API loaded successfully')
-      console.log('[DEBUG] initializeMap: window.google available:', !!window.google)
-      console.log('[DEBUG] initializeMap: window.google.maps available:', !!window.google?.maps)
 
-      if (!mapRef.current) {
-        console.log('[DEBUG] initializeMap: mapRef.current is null after load')
-        return
+      if (!window.google || !window.google.maps) {
+        throw new Error('Failed to load Google Maps API')
       }
 
-      console.log('[DEBUG] initializeMap: Creating map instance')
+      // Create map instance
       const map = new window.google.maps.Map(mapRef.current, {
-        center: { lat: 28.6139, lng: 77.2090 },
-        zoom: 11,
+        center: { lat: 13.1986, lng: 77.7066 },
+        zoom: 15,
         mapTypeControl: true,
+        mapTypeId: google.maps.MapTypeId.HYBRID,
         streetViewControl: true,
         fullscreenControl: true,
         zoomControl: true,
@@ -119,7 +131,15 @@ export const LiveMapView: React.FC<LiveMapViewProps> = ({ selectedDriver: propSe
         ]
       })
 
+      // Store map instance
       mapInstanceRef.current = map
+
+      // Ensure proper rendering
+      window.google.maps.event.addListenerOnce(map, 'idle', () => {
+        window.google.maps.event.trigger(map, 'resize');
+      });
+
+      // Initialize services
       directionsServiceRef.current = new window.google.maps.DirectionsService()
       directionsRendererRef.current = new window.google.maps.DirectionsRenderer({
         suppressMarkers: true,
@@ -131,27 +151,32 @@ export const LiveMapView: React.FC<LiveMapViewProps> = ({ selectedDriver: propSe
       })
       directionsRendererRef.current.setMap(map)
 
+      // Update state
       setMapLoaded(true)
-      setMapError(null)
-      console.log('[DEBUG] initializeMap: Map initialized successfully')
+      setInitializationAttempted(true)
 
-    } catch (error) {
-      console.error('[DEBUG] initializeMap: Error occurred:', error)
-      let errorMessage = 'Failed to load Google Maps'
-      if (error instanceof Error) {
-        if (error.message.includes('API key')) {
-          errorMessage = 'Invalid Google Maps API key.'
-        } else if (error.message.includes('network')) {
-          errorMessage = 'Network error loading Google Maps.'
-        } else {
-          errorMessage = error.message
+      // Update markers if we have data
+      if (mounted) {
+        if (updateMapMarkersRef.current) {
+          updateMapMarkersRef.current()
         }
       }
-      setMapError(errorMessage)
+    } catch (error) {
+      console.error('[Map Error]:', error)
+      let message = 'Failed to load map'
+      if (error instanceof Error) {
+        message = error.message
+      }
+      if (mounted) {
+        setMapError(message)
+        setInitializationAttempted(false)
+      }
     }
-  }, [mapLoaded])
 
-
+    return () => {
+      mounted = false;
+    }
+  }, [])
   const getMarkerIcon = (type: string, status: string) => {
     const baseUrl = 'https://maps.google.com/mapfiles/ms/icons/'
     
@@ -170,16 +195,15 @@ export const LiveMapView: React.FC<LiveMapViewProps> = ({ selectedDriver: propSe
   }
 
   const updateMapMarkers = useCallback(() => {
-    console.log('[DEBUG] updateMapMarkers: Function called')
-    if (!mapInstanceRef.current || !window.google) {
-      console.log('[DEBUG] updateMapMarkers: Map instance or Google API not available')
+    if (!mapInstanceRef.current || !window.google || !mapLoaded) {
       return
     }
 
-    console.log('[DEBUG] updateMapMarkers: Starting marker update, trackingData length =', trackingData.length)
-
+    // Clear existing markers and polylines
     markersRef.current.forEach(marker => marker.setMap(null))
     markersRef.current.clear()
+    polylinesRef.current.forEach(polyline => polyline.setMap(null))
+    polylinesRef.current.clear()
 
     const bounds = new window.google.maps.LatLngBounds()
     let hasValidLocations = false
@@ -188,150 +212,140 @@ export const LiveMapView: React.FC<LiveMapViewProps> = ({ selectedDriver: propSe
       ? trackingData
       : trackingData.filter(data => data.driver.id === selectedDriver)
 
-    console.log('[DEBUG] updateMapMarkers: selectedDriver =', selectedDriver, 'filteredData length =', filteredData.length)
-
-    if (filteredData.length === 0) {
-      console.log('[DEBUG] updateMapMarkers: No data to display on map')
-    }
-
     filteredData.forEach(data => {
       const { driver, booking } = data
 
-      // Driver marker
+      // Add driver marker
       if (driver.current_latitude && driver.current_longitude) {
-        console.log('[DEBUG] updateMapMarkers: Creating driver marker for', driver.full_name)
-        const driverMarker = new window.google.maps.Marker({
-          position: {
-            lat: Number(driver.current_latitude),
-            lng: Number(driver.current_longitude)
-          },
+        const position = {
+          lat: Number(driver.current_latitude),
+          lng: Number(driver.current_longitude)
+        }
+
+        const marker = new window.google.maps.Marker({
+          position,
           map: mapInstanceRef.current,
           icon: {
             url: getMarkerIcon('driver', driver.status),
-            scaledSize: new window.google.maps.Size(32, 32),
+            scaledSize: new window.google.maps.Size(32, 32)
           },
-          title: `${driver.full_name} - ${driver.status}`,
-          zIndex: 1000
+          title: driver.full_name
         })
 
-        const driverInfoWindow = new window.google.maps.InfoWindow({
-          content: `
-            <div style="padding: 12px; min-width: 250px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-              <h3 style="margin: 0 0 8px 0; font-weight: bold; color: #1e293b; font-size: 16px;">${driver.full_name}</h3>
-              <div style="margin-bottom: 6px;">
-                <span style="color: #64748b; font-size: 13px;">Status:</span>
-                <span style="color: #10B981; font-weight: bold; margin-left: 4px;">${driver.status}</span>
-              </div>
-              <div style="margin-bottom: 6px;">
-                <span style="color: #64748b; font-size: 13px;">Phone:</span>
-                <span style="color: #2563eb; margin-left: 4px;">${driver.phone_no}</span>
-              </div>
-              ${driver.rating ? `<div style="margin-bottom: 8px;"><span style="color: #64748b; font-size: 13px;">Rating: ⭐ ${driver.rating}/5</span></div>` : ''}
-              
-              ${booking ? `
-                <div style="border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 8px;">
-                  <div style="margin-bottom: 6px;"><span style="color: #64748b; font-size: 12px; font-weight: bold;">ACTIVE RIDE</span></div>
-                  <div style="margin-bottom: 4px;"><span style="color: #64748b; font-size: 12px;">Customer:</span> <span style="color: #1e293b; font-weight: 500;">${booking.customer?.full_name || 'N/A'}</span></div>
-                  <div style="margin-bottom: 4px;"><span style="color: #64748b; font-size: 12px;">From:</span> <span style="color: #1e293b;">${booking.pickup_address || 'N/A'}</span></div>
-                  <div style="margin-bottom: 4px;"><span style="color: #64748b; font-size: 12px;">To:</span> <span style="color: #1e293b;">${booking.dropoff_address || 'N/A'}</span></div>
-                  ${booking.fare_amount ? `<div style="margin-bottom: 4px;"><span style="color: #64748b; font-size: 12px;">Fare:</span> <span style="color: #10B981; font-weight: bold;">₹${booking.fare_amount}</span></div>` : ''}
-                </div>
-              ` : `
-                <div style="border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 8px;">
-                  <div style="color: #64748b; font-size: 12px;">Available for rides</div>
-                </div>
-              `}
-            </div>
-          `
-        })
-
-        driverMarker.addListener('click', () => {
-          driverInfoWindow.open(mapInstanceRef.current, driverMarker)
-        })
-
-        markersRef.current.set(`driver-${driver.id}`, driverMarker)
-        bounds.extend(driverMarker.getPosition()!)
+        markersRef.current.set(`driver-${driver.id}`, marker)
+        bounds.extend(position)
         hasValidLocations = true
       }
 
-      // Pickup marker
-      if (booking?.pickup_latitude && booking?.pickup_longitude) {
-        console.log('[DEBUG] updateMapMarkers: Creating pickup marker for booking', booking.id)
-        const pickupMarker = new window.google.maps.Marker({
-          position: {
+      // Add booking markers and route if available
+      if (booking) {
+        if (booking.pickup_latitude && booking.pickup_longitude) {
+          const position = {
             lat: Number(booking.pickup_latitude),
             lng: Number(booking.pickup_longitude)
-          },
-          map: mapInstanceRef.current,
-          icon: {
-            url: getMarkerIcon('pickup', 'active'),
-            scaledSize: new window.google.maps.Size(24, 24),
-          },
-          title: `Pickup: ${booking.pickup_address}`,
-          zIndex: 500
-        })
+          }
 
-        markersRef.current.set(`pickup-${booking.id}`, pickupMarker)
-        bounds.extend(pickupMarker.getPosition()!)
-        hasValidLocations = true
-      }
+          const marker = new window.google.maps.Marker({
+            position,
+            map: mapInstanceRef.current,
+            icon: {
+              url: getMarkerIcon('pickup', 'active'),
+              scaledSize: new window.google.maps.Size(24, 24)
+            },
+            title: 'Pickup'
+          })
 
-      // Dropoff marker
-      if (booking?.dropoff_latitude && booking?.dropoff_longitude) {
-        console.log('[DEBUG] updateMapMarkers: Creating dropoff marker for booking', booking.id)
-        const dropoffMarker = new window.google.maps.Marker({
-          position: {
+          markersRef.current.set(`pickup-${booking.id}`, marker)
+          bounds.extend(position)
+          hasValidLocations = true
+        }
+
+        if (booking.dropoff_latitude && booking.dropoff_longitude) {
+          const position = {
             lat: Number(booking.dropoff_latitude),
             lng: Number(booking.dropoff_longitude)
-          },
-          map: mapInstanceRef.current,
-          icon: {
-            url: getMarkerIcon('dropoff', 'active'),
-            scaledSize: new window.google.maps.Size(24, 24),
-          },
-          title: `Dropoff: ${booking.dropoff_address}`,
-          zIndex: 500
-        })
+          }
 
-        markersRef.current.set(`dropoff-${booking.id}`, dropoffMarker)
-        bounds.extend(dropoffMarker.getPosition()!)
-        hasValidLocations = true
+          const marker = new window.google.maps.Marker({
+            position,
+            map: mapInstanceRef.current,
+            icon: {
+              url: getMarkerIcon('dropoff', 'active'),
+              scaledSize: new window.google.maps.Size(24, 24)
+            },
+            title: 'Dropoff'
+          })
+
+          markersRef.current.set(`dropoff-${booking.id}`, marker)
+          bounds.extend(position)
+          hasValidLocations = true
+        }
+
+        // Draw route if we have both pickup and dropoff
+        if (booking.pickup_latitude && booking.pickup_longitude &&
+            booking.dropoff_latitude && booking.dropoff_longitude) {
+          directionsServiceRef.current?.route({
+            origin: {
+              lat: Number(booking.pickup_latitude),
+              lng: Number(booking.pickup_longitude)
+            },
+            destination: {
+              lat: Number(booking.dropoff_latitude),
+              lng: Number(booking.dropoff_longitude)
+            },
+            travelMode: google.maps.TravelMode.DRIVING
+          }, (response, status) => {
+            if (status === 'OK' && response) {
+              const polyline = new google.maps.Polyline({
+                path: response.routes[0].overview_path,
+                geodesic: true,
+                strokeColor: '#3B82F6',
+                strokeOpacity: 1.0,
+                strokeWeight: 4
+              })
+              polyline.setMap(mapInstanceRef.current)
+              polylinesRef.current.set(`route-${booking.id}`, polyline)
+            }
+          })
+        }
       }
     })
 
+    // Adjust map view
     if (hasValidLocations && !bounds.isEmpty()) {
       mapInstanceRef.current.fitBounds(bounds)
-      console.log('[DEBUG] updateMapMarkers: Fitted bounds to markers')
-    } else if (trackingData.length === 0) {
-      mapInstanceRef.current.setCenter({ lat: 28.6139, lng: 77.2090 })
-      mapInstanceRef.current.setZoom(11)
-      console.log('[DEBUG] updateMapMarkers: No valid locations, set default center')
     } else {
-      console.log('[DEBUG] updateMapMarkers: No valid locations found')
+      // Default view of Bengaluru Airport
+      mapInstanceRef.current.setCenter({ lat: 13.1986, lng: 77.7066 })
+      mapInstanceRef.current.setZoom(15)
+      mapInstanceRef.current.setMapTypeId(google.maps.MapTypeId.HYBRID)
     }
-  }, [trackingData, selectedDriver])
+  }, [trackingData, selectedDriver, mapLoaded])
 
+  // Keep reference to latest updateMapMarkers
   useEffect(() => {
-    console.log('[DEBUG] useEffect: Initializing map and refreshing data')
+    updateMapMarkersRef.current = updateMapMarkers
+  }, [updateMapMarkers])
+
+  // Initialize map on mount
+  useEffect(() => {
     initializeMap()
-    refreshData()
-  }, [initializeMap, refreshData])
+  }, [initializeMap])
 
+  // Update markers when data changes
   useEffect(() => {
-    console.log('[DEBUG] useEffect: mapLoaded =', mapLoaded, 'trackingData length =', trackingData.length, 'selectedDriver =', selectedDriver)
     if (mapLoaded && trackingData.length > 0) {
-      console.log('[DEBUG] LiveMapView: selectedDriver changed to:', selectedDriver)
       updateMapMarkers()
     }
-  }, [mapLoaded, trackingData, selectedDriver, updateMapMarkers])
+  }, [mapLoaded, trackingData, updateMapMarkers])
 
-  const handleRefresh = () => {
-    refreshData()
-  }
-
-  const toggleAutoRefresh = () => {
-    setAutoRefresh(!autoRefresh)
-  }
+  // Auto-refresh handling
+  useEffect(() => {
+    if (autoRefresh) {
+      const interval = setInterval(refreshData, 30000) // 30 seconds
+      return () => clearInterval(interval)
+    }
+  }, [autoRefresh, refreshData])
 
   if (loading) {
     return (
@@ -352,147 +366,158 @@ export const LiveMapView: React.FC<LiveMapViewProps> = ({ selectedDriver: propSe
         <CardContent className="h-full flex items-center justify-center">
           <div className="text-center space-y-4">
             <p className="text-red-500">Error: {error}</p>
-            <Button onClick={handleRefresh}>Retry</Button>
+            <Button onClick={refreshData}>Retry</Button>
           </div>
         </CardContent>
       </Card>
     )
   }
 
-  const selectedDriverData = selectedDriver === 'all'
-    ? null
-    : trackingData.find(data => data.driver.id === selectedDriver)
-
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center">
-            <Navigation className="h-5 w-5 mr-2" />
-            Live Map Tracking
-          </CardTitle>
-          <div className="flex items-center space-x-2">
-            <Select value={selectedDriver} onValueChange={setInternalSelectedDriver}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Select driver" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Drivers</SelectItem>
-                {trackingData.map(data => (
-                  <SelectItem key={data.driver.id} value={data.driver.id}>
-                    {data.driver.full_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={toggleAutoRefresh}
-              className={autoRefresh ? 'bg-green-50 border-green-200' : ''}
-            >
-              <RotateCcw className={`h-4 w-4 mr-1 ${autoRefresh ? 'animate-spin' : ''}`} />
-              Auto
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleRefresh}>
-              <RotateCcw className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>Tracking {trackingData.length} active rides</span>
-          <span>Last updated: {lastUpdate.toLocaleTimeString()}</span>
-        </div>
-      </CardHeader>
-
-      {selectedDriverData && selectedDriverData.booking && (
-        <div className="px-6 pb-4 border-b">
-          <div className="bg-blue-50 rounded-lg p-4">
-            <h3 className="font-semibold text-blue-900 mb-3">Active Ride Details</h3>
-            <div className="grid grid-cols-2 gap-4 mb-3">
-              <div>
-                <p className="text-xs text-blue-700 mb-1">Customer</p>
-                <p className="font-medium text-blue-900">{selectedDriverData.booking.customer?.full_name || 'N/A'}</p>
-              </div>
-              <div>
-                <p className="text-xs text-blue-700 mb-1">Status</p>
-                <p className="font-medium text-blue-900 capitalize">{selectedDriverData.booking.status}</p>
-              </div>
-            </div>
-            <div className="space-y-2 mb-3">
-              <div className="flex items-start space-x-2">
-                <span className="text-yellow-600 mt-0.5">📍</span>
-                <div>
-                  <p className="text-xs text-blue-700">Pickup</p>
-                  <p className="text-sm text-blue-900">{selectedDriverData.booking.pickup_address}</p>
-                </div>
-              </div>
-              <div className="flex items-start space-x-2">
-                <span className="text-red-600 mt-0.5">🎯</span>
-                <div>
-                  <p className="text-xs text-blue-700">Dropoff</p>
-                  <p className="text-sm text-blue-900">{selectedDriverData.booking.dropoff_address}</p>
-                </div>
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-4 text-xs">
-              {selectedDriverData.booking.fare_amount && (
-                <div>
-                  <p className="text-blue-700">Fare</p>
-                  <p className="font-medium text-blue-900">₹{selectedDriverData.booking.fare_amount}</p>
-                </div>
-              )}
-              {selectedDriverData.booking.distance_km && (
-                <div>
-                  <p className="text-blue-700">Distance</p>
-                  <p className="font-medium text-blue-900">{selectedDriverData.booking.distance_km} km</p>
-                </div>
-              )}
-              <div>
-                <p className="text-blue-700">Vehicle</p>
-                <p className="font-medium text-blue-900">{selectedDriverData.vehicle?.type || 'N/A'}</p>
-              </div>
+    <div className="h-full flex flex-col">
+      <Card className="flex-grow flex flex-col">
+        <CardHeader className="flex-none pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center">
+              <Navigation className="h-5 w-5 mr-2" />
+              Live Map Tracking
+            </CardTitle>
+            <div className="flex items-center space-x-2">
+              <Select value={selectedDriver} onValueChange={setInternalSelectedDriver}>
+                <SelectTrigger className="w-48">
+                  <SelectValue placeholder="Select driver" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Drivers</SelectItem>
+                  {trackingData.map(data => (
+                    <SelectItem key={data.driver.id} value={data.driver.id}>
+                      {data.driver.full_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAutoRefresh(!autoRefresh)}
+                className={autoRefresh ? 'bg-green-50 border-green-200' : ''}
+              >
+                <RotateCcw className={`h-4 w-4 mr-1 ${autoRefresh ? 'animate-spin' : ''}`} />
+                Auto
+              </Button>
+              <Button variant="outline" size="sm" onClick={refreshData}>
+                <RotateCcw className="h-4 w-4" />
+              </Button>
             </div>
           </div>
-        </div>
-      )}
+          <div className="flex items-center justify-between text-sm text-muted-foreground">
+            <span>Tracking {trackingData.length} active rides</span>
+            <span>Last updated: {lastUpdate.toLocaleTimeString()}</span>
+          </div>
+        </CardHeader>
 
-      <CardContent className="p-0">
-        <div
-          ref={mapRef}
-          className="w-full h-96 rounded-b-lg"
-          style={{ minHeight: '400px', position: 'relative' }}
-        >
-          {!mapLoaded && !mapError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
-              <div className="text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
-                <p className="text-sm text-gray-600">Loading Google Maps...</p>
+        {selectedDriverData && selectedDriverData.booking && (
+          <div className="px-6 pb-4 border-b">
+            <div className="bg-blue-50 rounded-lg p-4">
+              <h3 className="font-semibold text-blue-900 mb-3">Active Ride Details</h3>
+              <div className="grid grid-cols-2 gap-4 mb-3">
+                <div>
+                  <p className="text-xs text-blue-700 mb-1">Customer</p>
+                  <p className="font-medium text-blue-900">{selectedDriverData.booking.customer?.full_name || 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-blue-700 mb-1">Status</p>
+                  <p className="font-medium text-blue-900 capitalize">{selectedDriverData.booking.status}</p>
+                </div>
+              </div>
+              <div className="space-y-2 mb-3">
+                <div className="flex items-start space-x-2">
+                  <span className="text-yellow-600 mt-0.5">📍</span>
+                  <div>
+                    <p className="text-xs text-blue-700">Pickup</p>
+                    <p className="text-sm text-blue-900">{selectedDriverData.booking.pickup_address}</p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-2">
+                  <span className="text-red-600 mt-0.5">🎯</span>
+                  <div>
+                    <p className="text-xs text-blue-700">Dropoff</p>
+                    <p className="text-sm text-blue-900">{selectedDriverData.booking.dropoff_address}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-4 text-xs">
+                {selectedDriverData.booking.fare_amount && (
+                  <div>
+                    <p className="text-blue-700">Fare</p>
+                    <p className="font-medium text-blue-900">₹{selectedDriverData.booking.fare_amount}</p>
+                  </div>
+                )}
+                {selectedDriverData.booking.distance_km && (
+                  <div>
+                    <p className="text-blue-700">Distance</p>
+                    <p className="font-medium text-blue-900">{selectedDriverData.booking.distance_km} km</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-blue-700">Vehicle</p>
+                  <p className="font-medium text-blue-900">{selectedDriverData.vehicle?.type || 'N/A'}</p>
+                </div>
               </div>
             </div>
-          )}
-          
-          {mapError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-red-50">
-              <div className="text-center p-6 bg-white rounded-lg shadow-lg max-w-md">
-                <div className="text-red-500 text-lg mb-2">⚠️</div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Map Loading Error</h3>
-                <p className="text-sm text-gray-600 mb-4">{mapError}</p>
-                <button
-                  onClick={() => {
-                    setMapError(null)
-                    setMapLoaded(false)
-                    initializeMap()
-                  }}
-                  className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
-                >
-                  Retry Loading Map
-                </button>
+          </div>
+        )}
+
+        <CardContent className="flex-grow p-0 relative min-h-[600px]">
+            <div
+              ref={mapContainerRef}
+              className="absolute inset-0 bg-gray-50 rounded-b-lg overflow-hidden"
+              style={{ display: 'flex', flexDirection: 'column' }}
+          >
+              <div
+                ref={mapRef}
+                id="google-map-container"
+                className="flex-grow relative"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  minHeight: '600px'
+                }}
+              />
+            {!mapLoaded && !mapError && (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-100/90 backdrop-blur-sm">
+                <div className="text-center p-6 bg-white rounded-lg shadow-sm">
+                  <div className="animate-spin rounded-full h-10 w-10 border-4 border-primary border-t-transparent mx-auto mb-4"></div>
+                  <p className="text-base font-medium text-gray-900 mb-1">Loading Google Maps</p>
+                  <p className="text-sm text-gray-600">Please wait while we initialize the map...</p>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+            )}
+            
+            {mapError && (
+              <div className="absolute inset-0 flex items-center justify-center bg-white">
+                <div className="text-center p-8 max-w-md">
+                  <div className="text-red-500 text-2xl mb-4">⚠️</div>
+                  <h3 className="text-xl font-semibold text-gray-900 mb-3">Unable to Load Map</h3>
+                  <p className="text-base text-gray-600 mb-6">{mapError}</p>
+                  <p className="text-sm text-gray-500 mb-6">Please verify your internet connection and try again.</p>
+                  <button
+                    onClick={() => {
+                      setMapError(null)
+                      setInitializationAttempted(false)
+                      setMapLoaded(false)
+                      setTimeout(initializeMap, 1000)
+                    }}
+                    className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-base font-medium shadow-sm transition-colors"
+                  >
+                    Retry Loading Map
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   )
 }
